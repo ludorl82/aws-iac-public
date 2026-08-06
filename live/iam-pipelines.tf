@@ -159,7 +159,11 @@ locals {
     "cronicle",
     "grafana",
     "n8n",
-    "numeriseur-sftpgo",
+    # "deadman" removed 2026-08-05 — the heartbeats now write to their own
+    # bucket via deadman-heartbeat-write. Removed only AFTER both writers
+    # were confirmed on the new bucket, per the ordering lesson from #5:
+    # pulling a prefix while its writer still exists converts a working job
+    # into a silent AccessDenied rather than removing it.
   ]
 }
 
@@ -191,6 +195,38 @@ resource "aws_iam_user" "docker_homelab_backup" {
 resource "aws_iam_user_policy_attachment" "docker_homelab_backup" {
   user       = aws_iam_user.docker_homelab_backup.name
   policy_arn = aws_iam_policy.homelab_backup_docker_write.arn
+}
+
+# Heartbeat writes go to their own bucket (see s3.tf for why they left
+# homelab-backups). Deliberately a SEPARATE policy rather than another prefix
+# on homelab-backup-docker-write: the two have different lifetimes, and the
+# "deadman" entry in local.homelab_backup_docker_prefixes above comes out once
+# the writers have moved. Both heartbeat writers — the pi-02 systemd timer
+# and the k3s CronJob — authenticate as this same shared user.
+data "aws_iam_policy_document" "deadman_heartbeat_write" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:ListBucket",
+    ]
+
+    resources = [
+      aws_s3_bucket.deadman.arn,
+      "${aws_s3_bucket.deadman.arn}/deadman/*",
+    ]
+  }
+}
+
+resource "aws_iam_policy" "deadman_heartbeat_write" {
+  name   = "deadman-heartbeat-write"
+  policy = data.aws_iam_policy_document.deadman_heartbeat_write.json
+}
+
+resource "aws_iam_user_policy_attachment" "deadman_heartbeat_write" {
+  user       = aws_iam_user.docker_homelab_backup.name
+  policy_arn = aws_iam_policy.deadman_heartbeat_write.arn
 }
 
 data "aws_iam_policy_document" "homelab_backup_pi-02_write" {

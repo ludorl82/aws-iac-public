@@ -1,0 +1,84 @@
+# Apply on merge — with the destroy gate. A FRESH plan runs here (never a
+# stale PR artifact), and any plan proposing a delete fails the job and waits
+# for a human: the same zero-destroys discipline the imports were gated on.
+# Destructive changes are applied deliberately from the console shell.
+#
+# The OIDC role (gha-aws-iac-apply) is AdministratorAccess, assumable only
+# from pushes to master of this repo — see live/iam-github-oidc.tf for why.
+
+name: apply
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  id-token: write
+  contents: read
+
+# Applies serialize; never cancel a running apply.
+concurrency:
+  group: tofu-apply
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "1"
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.plugin-cache
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: live
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.12.5
+          tofu_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/gha-aws-iac-apply
+          aws-region: ca-central-1
+
+      - uses: actions/cache@v4
+        with:
+          path: .plugin-cache
+          key: tofu-plugins-${{ runner.os }}-${{ hashFiles('live/.terraform.lock.hcl') }}
+
+      # The numeriseur function has a binary dependency (Pillow), so its package
+      # is assembled before tofu runs — archive_file zips a directory that does
+      # not exist until this step. build.sh normalises mtimes, so the hash it
+      # produces here matches the one a local build produces; without that the
+      # plan would propose a code update on every run.
+      - name: Build Lambda packages
+        run: ./numeriseur/build.sh
+
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR" && tofu init -input=false
+
+      - name: tofu plan
+        id: plan
+        run: |
+          set +e
+          tofu plan -detailed-exitcode -input=false -no-color -out=tfplan
+          rc=$?
+          set -e
+          echo "exitcode=$rc" >>"$GITHUB_OUTPUT"
+          [ "$rc" -eq 1 ] && exit 1 || true
+
+      - name: Destroy gate
+        if: steps.plan.outputs.exitcode == '2'
+        run: |
+          destroys=$(tofu show -json tfplan | jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | .address')
+          if [ -n "$destroys" ]; then
+            echo "::error::Plan contains destroys — refusing to auto-apply. A human must run this."
+            echo "$destroys"
+            exit 1
+          fi
+
+      - name: tofu apply
+        if: steps.plan.outputs.exitcode == '2'
+        run: tofu apply -input=false -no-color tfplan

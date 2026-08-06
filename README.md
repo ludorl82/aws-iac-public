@@ -116,6 +116,23 @@ The blocked-file list exists because `tpp-iac` has carried `terraform.tfstate`
 and a `.tfvars` holding a Cloudflare key in its history since 2024. Git history
 is permanent; this is the cheap way not to repeat it.
 
+## CI: plan on PR, apply on merge
+
+`.github/workflows/` closes the loop the drift check only observes:
+
+- **`plan.yml`** (pull requests): read-only plan via OIDC role
+  `gha-aws-iac-plan` (ReadOnlyAccess, `live/iam-github-oidc.tf`), posted as a
+  sticky PR comment. `-lock=false` — the plan role cannot write anything.
+- **`apply.yml`** (push to master): re-plans fresh via `gha-aws-iac-apply`,
+  then applies — unless the plan contains **any destroy**, in which case the
+  job fails and waits for a human. Destructive changes are applied
+  deliberately from the console shell; the workflow never does them.
+
+The apply role is AdministratorAccess assumable only from this repo's master
+branch — the trust policy and the destroy gate are the guards, not the policy
+document. No AWS keys are stored on GitHub. The nightly drift check (Kuma 40) stays as
+the verification half of the loop.
+
 ## Phases
 
 | # | Scope | Status |
@@ -222,7 +239,128 @@ They grant nothing reachable (a bucket, a hosted zone and a volume that are all
 gone), so this is low risk — but remove them from `live/iam.tf` in the same
 commit if you do it.
 
+## The numeriseur Lambda
+
+`live/numeriseur.tf` plus `live/numeriseur/`. It replaced the SFTPGo action
+hook, which is what allowed that workload to go back to the stock
+`drakkan/sftpgo` image.
+
+**Its code IS managed here**, unlike the three legacy functions in
+`lambdas.tf`. It follows the `deadman` pattern, with one addition: Pillow is a
+binary dependency, so the package is assembled by `live/numeriseur/build.sh`
+before tofu runs. Both CI workflows call it; locally you must too.
+
+```sh
+cd live && ./numeriseur/build.sh && tofu plan
+```
+
+`build.sh` normalises permissions before `archive_file` sees the directory. That
+is not tidiness. `archive_file` normalises mtimes but bakes each file's
+permission bits into the archive, so the package hash depends on the umask of
+whoever ran pip — see the cleanup note below for what that costs.
+
+### The secret
+
+`numeriseur/google-drive` is created by tofu; its **value is not**. Populate it
+with `scripts/google-oauth-setup.py`, once per Drive account:
+
+```sh
+./scripts/google-oauth-setup.py --account ludo
+./scripts/google-oauth-setup.py --account lea    # needs its owner at the browser
+```
+
+It merges rather than replaces, so authorizing `lea` later does not clobber
+`ludo`. Resulting shape:
+
+```json
+{
+  "client_id": "...",
+  "client_secret": "...",
+  "accounts": {
+    "ludo": {
+      "refresh_token": "...",
+      "folders": {"documents": "<folder id>", "photos": "<folder id>"}
+    }
+  }
+}
+```
+
+An account absent from `accounts` is not an error: the function logs that the
+destination has no credentials yet and leaves the object in S3, to be replayed
+later. That is the expected state while the two accounts are rotated one at a
+time.
+
+**Publish the OAuth consent screen to production before running this.** A
+client left in "Testing" status is issued refresh tokens that expire after
+**7 days**, and the pipeline would stop a week later with no obvious cause.
+For `drive.file` publishing is free and immediate — no verification.
+
+**The scope is `drive.file`, and that is a real constraint, not a preference.**
+It grants per-file access only to what the app itself created. Full `drive`
+would lift that, but it is a *restricted* scope: publishing to production then
+requires Google verification plus a paid annual CASA assessment, and not
+publishing means the 7-day expiry above. rclone only avoided all this because
+its shared, already-verified client was doing the asking — the arrangement
+being retired here.
+
+**The app cannot use your existing `Numerisations`/`Photos` folders, ever.**
+They were created by rclone's client, so `drive.file` cannot see them, and
+there is no way to hand them over — not by sharing, not by name lookup. The
+script creates its own destinations and records the ids.
+
+**The trap this produces bit a real cutover on 2026-08-05.** The app's view of
+Drive is a strict *subset* of yours, so a name lookup that returns
+`Numerisations` has not found your folder — it has found one the app created
+earlier. The script said "reusing existing folder", that was read as "found the
+pre-existing one", and scans were delivered to a second identically-named
+folder for a while before anyone noticed. Two lessons, both now built in: the
+script names the origin of a folder explicitly, and
+
+```sh
+./scripts/google-oauth-setup.py --account ludo --inspect
+```
+
+lists every folder the app can actually see with `createdTime` and parents.
+**Trust that, not a name.** `--set-folder documents <id>` repoints a destination
+without re-authorizing, and refuses an id the app cannot reach.
+
+### Replaying
+
+S3 is the queue. Anything not delivered — a destination whose credentials did
+not exist yet, or a failure parked on the DLQ — is replayed by invoking the
+function directly:
+
+```sh
+aws lambda invoke --function-name numeriseur-processor \
+  --payload '{"backfill":{"prefix":"ludoetlea/","accounts":["lea"]}}' \
+  --cli-binary-format raw-in-base64-out /dev/stdout
+```
+
+`accounts` restricts delivery, so replaying a shared prefix after one account
+is rotated does not push a second copy to the account that already got it.
+Backfill skips files already present in the target folder, so it is safe to run
+twice.
+
 ## Known cleanup, not yet done
+
+- **`deadman`'s package hash depends on your umask.** Planning from the console
+  shell proposes a `source_code_hash` update to `aws_lambda_function.deadman`
+  even though the deployed code is byte-identical to the repo (verified by
+  downloading the deployed zip and diffing it). CI does not see the change.
+
+  `archive_file` normalises mtimes but writes each file's permission bits into
+  the archive, and git tracks only the executable bit — so the mode comes from
+  the umask of whoever checked out. The GitHub runner's 022 gives `0644` and
+  matches what was applied; the console shell's 002 gives `0664` and does not.
+  Confirmed by isolating the two: `touch -t 200001010000` on the source changes
+  nothing, `chmod 664` alone reproduces the diff.
+
+  Harmless in that an apply re-uploads identical code, but it is a permanent
+  phantom diff for anyone planning from a 002-umask host — including the
+  nightly drift check, depending on where it runs. The fix is the one
+  `numeriseur` already uses: normalise modes before archiving. For `deadman`
+  that means copying the source file into a build directory and `chmod 644`
+  there, rather than zipping it in place.
 
 - **`sg-0aaaaaaaaaaaaaaa3` (`launch-wizard-1`)** — attached to nothing, allows
   SSH from `0.0.0.0/0` and `::/0`. Deliberately not imported. Delete it:
@@ -255,3 +393,6 @@ Uptime Kuma push setup rather than adding new monitoring.
 Plans currently run as the `ludorl82` IAM user. Before wiring any automation,
 create a dedicated `iac` role and assume it — do not put long-lived admin keys
 in CI.
+
+CI smoke-tested 2026-07-30: plan-on-PR comment, OIDC role assumption, destroy
+gate verified in the sibling cloudflare-iac repo with a live record.

@@ -8,6 +8,18 @@
 # Bucket VERSIONING is the sharpest edge here: aws_s3_bucket_versioning is
 # omitted for buckets that were never versioned, because "Disabled" is a
 # write-once state that cannot be returned to once you enable or suspend.
+#
+# ONE exception, added deliberately rather than by adoption:
+# backups_portecles had versioning enabled on 2026-08-05 as the prerequisite
+# for Object Lock. Two backup buckets are now locked (GOVERNANCE, 30 days) so
+# the credential that writes a backup can no longer delete it. Two rules
+# follow from that and are easy to get wrong:
+#
+#   - Lock retention must stay SHORTER than any expiration rule on the same
+#     bucket, or lifecycle silently stops reclaiming.
+#   - Any versioned bucket with an expiration rule also needs a noncurrent
+#     rule, or `expiration` just writes delete markers over versions that are
+#     never reaped.
 
 # ---------------------------------------------------------------------------
 # backups-portecles-example-com — KeePass backups (aws cron -> S3, 01:05)
@@ -19,6 +31,50 @@ resource "aws_s3_bucket" "backups_portecles" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+# TWO ONE-WAY DOORS, both opened deliberately on 2026-08-05.
+#
+# 1. Versioning. This bucket had never been versioned, and "never versioned"
+#    is a state you cannot return to — from here it can only be Enabled or
+#    Suspended. It is enabled because Object Lock requires it.
+# 2. Object Lock, below, cannot be disabled once on, and versioning can never
+#    be suspended afterwards.
+#
+# The reason to accept both: the credential that writes these backups could
+# also delete them. This bucket holds the KeePass vault backups — the one
+# dataset here that is genuinely irreplaceable.
+resource "aws_s3_bucket_versioning" "backups_portecles" {
+  bucket = aws_s3_bucket.backups_portecles.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# GOVERNANCE, not COMPLIANCE. Compliance mode cannot be shortened or removed
+# by anyone including the root account — the only escape is deleting the AWS
+# account. That is the correct trade for a regulated archive and the wrong one
+# for a homelab, where the likeliest reason to break the lock is my own
+# mistake. Governance keeps the protection and leaves a scoped
+# s3:BypassGovernanceRetention escape hatch.
+#
+# 30 days: long enough that a bad delete is still recoverable when it is
+# noticed, and far short of the 365-day keepass2_ lifecycle below, so the
+# expiry rule keeps working. Retention must always stay under the expiration
+# it shares a bucket with, or lifecycle silently stops reclaiming.
+resource "aws_s3_bucket_object_lock_configuration" "backups_portecles" {
+  bucket = aws_s3_bucket.backups_portecles.id
+
+  rule {
+    default_retention {
+      mode = "GOVERNANCE"
+      days = 30
+    }
+  }
+
+  # Object Lock is rejected outright unless versioning is already on.
+  depends_on = [aws_s3_bucket_versioning.backups_portecles]
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "backups_portecles" {
@@ -44,6 +100,17 @@ resource "aws_s3_bucket_public_access_block" "backups_portecles" {
 resource "aws_s3_bucket_lifecycle_configuration" "backups_portecles" {
   bucket = aws_s3_bucket.backups_portecles.id
 
+  # The noncurrent rule is NOT decoration — it is required now that the bucket
+  # is versioned. On an unversioned bucket `expiration` permanently deleted the
+  # object. On a versioned one it only writes a delete marker, and the version
+  # underneath becomes noncurrent and stays forever unless something reaps it.
+  # Enabling versioning without this line would have quietly converted a
+  # working 365-day expiry into unbounded growth.
+  #
+  # 30 days matches the lock retention: a version can only be reclaimed once
+  # its retention has expired, so anything shorter would be refused. Equal is
+  # fine — S3 retries on later lifecycle runs, so a version caught exactly on
+  # the boundary is reclaimed a day late rather than never.
   rule {
     id     = "expire-keepass-backups-365d"
     status = "Enabled"
@@ -55,6 +122,65 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups_portecles" {
     expiration {
       days = 365
     }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# deadman-example-com — dead-man switch heartbeats (see deadman.tf)
+# ---------------------------------------------------------------------------
+#
+# Split out of homelab-backups on 2026-08-05, so that bucket can take Object
+# Lock. The two heartbeats are overwritten every 5 minutes, and a WORM bucket
+# cannot host a 5-minute overwrite loop: Object Lock makes a permanent version
+# delete return 403, so noncurrent-version expiry silently stops reclaiming
+# them and locked versions pile up for the whole retention period.
+#
+# So this bucket is deliberately the opposite of a backup bucket:
+# NOT versioned, NOT locked, no lifecycle rule. Only four keys ever exist
+# (two heartbeats, two .alerted/ markers) and every write overwrites in place,
+# so there is nothing to expire. Do not "harden" this by enabling versioning —
+# that is the exact thing this split exists to avoid.
+#
+# Contents are worthless: a timestamp, rewritten every 5 minutes. What matters
+# is the WRITE, not the data.
+
+resource "aws_s3_bucket" "deadman" {
+  bucket = "deadman-example-com"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "deadman" {
+  bucket = aws_s3_bucket.deadman.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+    bucket_key_enabled = false
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "deadman" {
+  bucket = aws_s3_bucket.deadman.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_ownership_controls" "deadman" {
+  bucket = aws_s3_bucket.deadman.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
   }
 }
 
@@ -150,6 +276,27 @@ resource "aws_s3_bucket_versioning" "homelab_backups" {
   }
 }
 
+# Already versioned, so only the lock itself is new here. Same reasoning as
+# backups_portecles: GOVERNANCE 30 days, with a scoped bypass rather than
+# compliance mode.
+#
+# This bucket is only eligible because the dead-man heartbeats moved out on
+# 2026-08-05 (see the deadman bucket above). They overwrote the same key every
+# 5 minutes, and locked versions cannot be reclaimed by lifecycle — they would
+# have accumulated for the full retention instead of being reaped at 7 days.
+resource "aws_s3_bucket_object_lock_configuration" "homelab_backups" {
+  bucket = aws_s3_bucket.homelab_backups.id
+
+  rule {
+    default_retention {
+      mode = "GOVERNANCE"
+      days = 30
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.homelab_backups]
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "homelab_backups" {
   bucket = aws_s3_bucket.homelab_backups.id
 
@@ -180,6 +327,12 @@ resource "aws_s3_bucket_ownership_controls" "homelab_backups" {
 
 # 30-day retention on a versioned bucket. Note this is the whole bucket, every
 # prefix — a backup older than 30 days does not exist anywhere in this account.
+#
+# noncurrent raised 7 -> 30 on 2026-08-05 to match the Object Lock retention
+# above. A version under retention cannot be permanently deleted, so a 7-day
+# rule against a 30-day lock would have been refused for three weeks out of
+# every four — a lifecycle rule that looks configured and quietly does nothing,
+# which is the failure mode worth avoiding here.
 resource "aws_s3_bucket_lifecycle_configuration" "homelab_backups" {
   bucket = aws_s3_bucket.homelab_backups.id
 
@@ -194,7 +347,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "homelab_backups" {
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = 7
+      noncurrent_days = 30
     }
   }
 }

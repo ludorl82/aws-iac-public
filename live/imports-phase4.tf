@@ -24,16 +24,6 @@ import {
 }
 
 import {
-  to = aws_iam_role.backup
-  id = "RoleBackup"
-}
-
-import {
-  to = aws_iam_role_policy.backup_snapshots
-  id = "RoleBackup:PrendreInstantanes"
-}
-
-import {
   to = aws_iam_role.cloudfront_ips
   id = "RoleCloudFrontIps"
 }
@@ -53,21 +43,6 @@ import {
 import {
   to = aws_iam_policy.tpp_numeriseur_keepass_backups
   id = "arn:aws:iam::123456789012:policy/tpp-numeriseur-keepass-backups"
-}
-
-import {
-  to = aws_iam_policy.tpp_numeriseur
-  id = "arn:aws:iam::123456789012:policy/tpp-numeriseur"
-}
-
-import {
-  to = aws_iam_policy.tpp_numeriseur_route53
-  id = "arn:aws:iam::123456789012:policy/tpp-numeriseur-route53"
-}
-
-import {
-  to = aws_iam_policy.strategie_docs_numeriseur
-  id = "arn:aws:iam::123456789012:policy/StrategieDocsNumeriseur"
 }
 
 import {
@@ -95,21 +70,6 @@ import {
 import {
   to = aws_iam_role_policy_attachment.aws_node_keepass
   id = "RoleAws/arn:aws:iam::123456789012:policy/tpp-numeriseur-keepass-backups"
-}
-
-import {
-  to = aws_iam_role_policy_attachment.aws_node_numeriseur
-  id = "RoleAws/arn:aws:iam::123456789012:policy/tpp-numeriseur"
-}
-
-import {
-  to = aws_iam_role_policy_attachment.aws_node_route53
-  id = "RoleAws/arn:aws:iam::123456789012:policy/tpp-numeriseur-route53"
-}
-
-import {
-  to = aws_iam_role_policy_attachment.aws_node_docs
-  id = "RoleAws/arn:aws:iam::123456789012:policy/StrategieDocsNumeriseur"
 }
 
 import {

@@ -1,6 +1,9 @@
-# Import blocks for phase 6: the EC2 instance, the five lambdas, and their
+# Import blocks for phase 6: the EC2 instance, the lambdas, and their
 # trigger plumbing (EventBridge rules/targets, lambda permissions, and the
 # cross-account SNS subscription that drives AjouterIpsCloudfront).
+#
+# The PrendreInstantanes/PurgerInstantanes snapshot pipeline was destroyed on
+# 2026-07-27; its import blocks were removed with the resources.
 #
 # Import id formats:
 #   aws_cloudwatch_event_target   "rule-name/target-id"
@@ -24,23 +27,8 @@ import {
 }
 
 import {
-  to = aws_lambda_function.prendre_instantanes
-  id = "PrendreInstantanes"
-}
-
-import {
-  to = aws_lambda_function.purger_instantanes
-  id = "PurgerInstantanes"
-}
-
-import {
   to = aws_lambda_function.ajouter_ips_cloudfront
   id = "AjouterIpsCloudfront"
-}
-
-import {
-  to = aws_cloudwatch_event_rule.backup_quotidien
-  id = "BackupQuotidien"
 }
 
 import {
@@ -51,16 +39,6 @@ import {
 import {
   to = aws_cloudwatch_event_rule.del_object_url
   id = "del_object_url_rule"
-}
-
-import {
-  to = aws_cloudwatch_event_target.backup_prendre
-  id = "BackupQuotidien/13e6d155-2485-492b-8822-e3953d343337"
-}
-
-import {
-  to = aws_cloudwatch_event_target.backup_purger
-  id = "BackupQuotidien/5bcf7f39-cc9c-4f80-b56a-c2fec0d4e2c7"
 }
 
 import {
@@ -81,16 +59,6 @@ import {
 import {
   to = aws_lambda_permission.del_object_url_events
   id = "del_object_url/AllowExecutionFromCloudWatch"
-}
-
-import {
-  to = aws_lambda_permission.prendre_events
-  id = "PrendreInstantanes/lambda-ec76febf-b9a5-4c53-8de6-8a3f4b25235b"
-}
-
-import {
-  to = aws_lambda_permission.purger_events
-  id = "PurgerInstantanes/lambda-b0a12a1e-814b-40d6-9958-9f2a059fd647"
 }
 
 import {

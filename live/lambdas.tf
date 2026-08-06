@@ -1,4 +1,4 @@
-# Phase 6b: the five lambdas and their trigger plumbing.
+# Phase 6b: the three lambdas and their trigger plumbing.
 #
 # CODE IS NOT MANAGED HERE. The provider insists on one of
 # filename/image_uri/s3_bucket even for imported functions, so each carries a
@@ -8,19 +8,19 @@
 # again, wire it properly instead of pointing tofu at a zip.
 #
 # Estate status, worth knowing before touching anything:
-#   - BackupQuotidien (cron 01:00) and both short_url rules are DISABLED in
-#     live. state = "DISABLED" below is deliberate adoption of that fact —
-#     flipping them on is a one-word change, but make it on purpose.
-#   - PrendreInstantanes / PurgerInstantanes are python2.7: they cannot be
-#     updated in place (runtime is dead), and they last ran in 2023. They and
-#     RoleBackup are candidates for deletion, not modernisation — the EBS
-#     snapshots they took have been superseded by the homelab-backups pipeline.
+#   - Both short_url rules are DISABLED in live. state = "DISABLED" below is
+#     deliberate adoption of that fact — flipping them on is a one-word
+#     change, but make it on purpose.
 #   - add/del_object_url are driven by SSM Parameter Store change events:
 #     creating a parameter creates a short URL. Dormant while the rules are
 #     disabled.
 #   - AjouterIpsCloudfront is the only live one: Amazon's AmazonIpSpaceChanged
 #     SNS topic (us-east-1, Amazon's account) invokes it to sync CloudFront
 #     ranges into a security group.
+#   - DELETED 2026-07-27: PrendreInstantanes / PurgerInstantanes (python2.7,
+#     last ran 2023-11), their BackupQuotidien rule + targets + invoke
+#     permissions, and RoleBackup. The EBS snapshots they took were superseded
+#     by the homelab-backups pipeline.
 
 # --- functions -------------------------------------------------------------
 
@@ -84,44 +84,6 @@ resource "aws_lambda_function" "del_object_url" {
   }
 }
 
-resource "aws_lambda_function" "prendre_instantanes" {
-  # Satisfies the provider's one-of(filename,image_uri,s3_bucket) validation.
-  # Never read: ignore_changes below means no code upload is ever planned, so
-  # the file does not need to exist. Code stays unmanaged, per the header.
-  filename = "unmanaged-see-header-comment.zip"
-
-  lifecycle {
-    ignore_changes = [filename, source_code_hash]
-  }
-
-  function_name = "PrendreInstantanes"
-  role          = aws_iam_role.backup.arn
-  runtime       = "python2.7"
-  handler       = "index.lambda_handler"
-  architectures = ["x86_64"]
-  memory_size   = 128
-  timeout       = 3
-}
-
-resource "aws_lambda_function" "purger_instantanes" {
-  # Satisfies the provider's one-of(filename,image_uri,s3_bucket) validation.
-  # Never read: ignore_changes below means no code upload is ever planned, so
-  # the file does not need to exist. Code stays unmanaged, per the header.
-  filename = "unmanaged-see-header-comment.zip"
-
-  lifecycle {
-    ignore_changes = [filename, source_code_hash]
-  }
-
-  function_name = "PurgerInstantanes"
-  role          = aws_iam_role.backup.arn
-  runtime       = "python2.7"
-  handler       = "index.lambda_handler"
-  architectures = ["x86_64"]
-  memory_size   = 128
-  timeout       = 3
-}
-
 resource "aws_lambda_function" "ajouter_ips_cloudfront" {
   # Satisfies the provider's one-of(filename,image_uri,s3_bucket) validation.
   # Never read: ignore_changes below means no code upload is ever planned, so
@@ -142,24 +104,6 @@ resource "aws_lambda_function" "ajouter_ips_cloudfront" {
 }
 
 # --- EventBridge rules + targets -------------------------------------------
-
-resource "aws_cloudwatch_event_rule" "backup_quotidien" {
-  name                = "BackupQuotidien"
-  schedule_expression = "cron(0 1 * * ? *)"
-  state               = "DISABLED"
-}
-
-resource "aws_cloudwatch_event_target" "backup_prendre" {
-  rule      = aws_cloudwatch_event_rule.backup_quotidien.name
-  target_id = "13e6d155-2485-492b-8822-e3953d343337"
-  arn       = aws_lambda_function.prendre_instantanes.arn
-}
-
-resource "aws_cloudwatch_event_target" "backup_purger" {
-  rule      = aws_cloudwatch_event_rule.backup_quotidien.name
-  target_id = "5bcf7f39-cc9c-4f80-b56a-c2fec0d4e2c7"
-  arn       = aws_lambda_function.purger_instantanes.arn
-}
 
 resource "aws_cloudwatch_event_rule" "add_object_url" {
   name        = "add_object_url_rule"
@@ -217,22 +161,6 @@ resource "aws_lambda_permission" "del_object_url_events" {
   function_name = aws_lambda_function.del_object_url.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.del_object_url.arn
-}
-
-resource "aws_lambda_permission" "prendre_events" {
-  statement_id  = "lambda-ec76febf-b9a5-4c53-8de6-8a3f4b25235b"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.prendre_instantanes.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.backup_quotidien.arn
-}
-
-resource "aws_lambda_permission" "purger_events" {
-  statement_id  = "lambda-b0a12a1e-814b-40d6-9958-9f2a059fd647"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.purger_instantanes.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.backup_quotidien.arn
 }
 
 resource "aws_lambda_permission" "ajouter_ips_sns" {
