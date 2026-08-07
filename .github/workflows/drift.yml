@@ -1,0 +1,136 @@
+# Nightly drift detection for this repo: `tofu plan` against live AWS, result
+# pushed to Uptime Kuma monitor 40. Self-contained since 2026-08-07: GitHub
+# schedules it, GitHub runs it, and it reports for itself.
+#
+# It got here in two steps the same day, and both are worth knowing.
+#
+# 1. The plan left the cluster. A k8s CronJob ran it as the `iac-drift` IAM
+#    user on a static access key -- ReadOnlyAccess over the whole account, no
+#    expiry, hand-copied into a Secret. That user and key are deleted; the
+#    plan now assumes gha-aws-iac-drift via OIDC, expiring with the run. The
+#    GitHub deploy key the CronJob needed is gone too -- checkout is native.
+#
+# 2. The scheduling and reporting left Cronicle. Briefly, Cronicle ssh'd a
+#    forced-command key into the console container, which dispatched this
+#    workflow and pushed the result from the LAN -- because Kuma's push
+#    endpoint sits behind Access and a runner's address can never be on an
+#    IP-list bypass. That indirection is gone: a path-scoped Access app
+#    (kuma.pub.example.com/api/push, declared in cloudflare-iac live/access-apps.tf)
+#    admits a SERVICE TOKEN, so the runner authenticates with
+#    CF-Access-Client-Id / -Secret and pushes directly.
+#
+# WHAT WATCHES THE WATCHER: nothing here detects a schedule that never fires,
+# and GitHub can silently not fire -- the 2026-08-06 Actions outage swallowed a
+# merge to cloudflare-iac master with no run created at all. That is covered by
+# Kuma 40 being a PUSH monitor: its grace interval exceeds the daily cadence,
+# so a check that never runs surfaces as a missed heartbeat, exactly like one
+# that runs and fails. If that monitor is ever converted away from push, this
+# loses its safety net.
+#
+# The plan runs with -lock=false: it never writes state and never takes the
+# lock, so a concurrent interactive apply is never blocked (worst case the
+# report reads a mid-apply state and the next night self-corrects).
+
+name: drift
+
+on:
+  schedule:
+    # 07:15 America/Montreal. GitHub cron is UTC with no timezone support, so
+    # this is EDT (UTC-4) and slips an hour against local time under EST. The
+    # exact minute does not matter: Kuma 40's grace interval is far wider.
+    - cron: "15 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC exchange
+  contents: read
+
+concurrency:
+  group: tofu-drift
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "1"
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.plugin-cache
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: live
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.12.5
+          tofu_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/gha-aws-iac-drift
+          aws-region: ca-central-1
+
+      - uses: actions/cache@v4
+        with:
+          path: .plugin-cache
+          key: tofu-plugins-${{ runner.os }}-${{ hashFiles('live/.terraform.lock.hcl') }}
+
+      # See apply.yml — archive_file zips a directory build.sh creates, so this
+      # has to run before any tofu command that evaluates the data source.
+      # Without it the plan fails on a missing zip, which is BROKEN, not drift.
+      - name: Build Lambda packages
+        run: ./numeriseur/build.sh
+
+      - name: tofu init
+        id: init
+        run: |
+          set +e
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          tofu init -input=false -no-color >init.log 2>&1
+          echo "exitcode=$?" >>"$GITHUB_OUTPUT"
+
+      - name: tofu plan
+        id: plan
+        if: steps.init.outputs.exitcode == '0'
+        run: |
+          set +e
+          tofu plan -detailed-exitcode -lock=false -input=false -no-color >plan.log 2>&1
+          echo "exitcode=$?" >>"$GITHUB_OUTPUT"
+
+      # Report to Kuma directly. `if: always()` is the point: a drift check
+      # that dies quietly is the one failure this exists to prevent.
+      - name: Push result to Kuma
+        if: always()
+        env:
+          PUSH_URL: ${{ secrets.KUMA_PUSH_URL }}
+          CF_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          INIT_RC: ${{ steps.init.outputs.exitcode }}
+          PLAN_RC: ${{ steps.plan.outputs.exitcode }}
+        run: |
+          set -u
+          push() {
+            curl -fsS -G "$PUSH_URL" \
+              -H "CF-Access-Client-Id: $CF_ID" \
+              -H "CF-Access-Client-Secret: $CF_SECRET" \
+              --data-urlencode "status=$1" \
+              --data-urlencode "msg=$2" >/dev/null
+          }
+
+          if [ "${INIT_RC:-1}" != "0" ]; then
+            push down "drift check broken: tofu init failed: $(tail -c 150 init.log | tr '\n' ' ')"
+            exit 1
+          fi
+
+          summary=$(grep -E '^Plan:|No changes' plan.log | head -1)
+          case "${PLAN_RC:-}" in
+            0) push up   "no drift — ${summary:-clean}" ;;
+            2) push down "DRIFT DETECTED — ${summary:-see job logs}"; exit 1 ;;
+            *) push down "drift check broken (rc=${PLAN_RC:-?}): $(tail -c 150 plan.log | tr '\n' ' ')"; exit 1 ;;
+          esac
+
+      - name: Surface plan output in the job log
+        if: always()
+        run: tail -100 plan.log || true
