@@ -1,0 +1,155 @@
+{
+  "edges": [
+    {
+      "from": "instance:aws_node",
+      "kind": "is",
+      "to": "host:cloud-01"
+    }
+  ],
+  "layer": "cloud",
+  "nodes": [
+    {
+      "id": "instance:aws_node",
+      "kind": "instance",
+      "label": "aws_node",
+      "layer": "cloud",
+      "meta": {
+        "availabilityZone": "ca-central-1a",
+        "instanceType": "t3a.medium"
+      },
+      "source": "live/ec2.tf"
+    },
+    {
+      "id": "lambda:deadman-switch",
+      "kind": "lambda",
+      "label": "deadman-switch",
+      "layer": "cloud",
+      "meta": {
+        "runtime": "python3.13"
+      },
+      "source": "live/deadman.tf"
+    },
+    {
+      "id": "lambda:add_object_url",
+      "kind": "lambda",
+      "label": "add_object_url",
+      "layer": "cloud",
+      "meta": {
+        "runtime": "python3.7"
+      },
+      "source": "live/lambdas.tf"
+    },
+    {
+      "id": "lambda:del_object_url",
+      "kind": "lambda",
+      "label": "del_object_url",
+      "layer": "cloud",
+      "meta": {
+        "runtime": "python3.7"
+      },
+      "source": "live/lambdas.tf"
+    },
+    {
+      "id": "lambda:AjouterIpsCloudfront",
+      "kind": "lambda",
+      "label": "AjouterIpsCloudfront",
+      "layer": "cloud",
+      "meta": {
+        "runtime": "python3.10"
+      },
+      "source": "live/lambdas.tf"
+    },
+    {
+      "id": "lambda:numeriseur-processor",
+      "kind": "lambda",
+      "label": "numeriseur-processor",
+      "layer": "cloud",
+      "meta": {
+        "runtime": "python3.13"
+      },
+      "source": "live/numeriseur.tf"
+    },
+    {
+      "id": "bucket:backups-portecles-example-com",
+      "kind": "bucket",
+      "label": "backups-portecles-example-com",
+      "layer": "cloud",
+      "meta": {},
+      "source": "live/s3.tf"
+    },
+    {
+      "id": "bucket:cronicle-data-example-com",
+      "kind": "bucket",
+      "label": "cronicle-data-example-com",
+      "layer": "cloud",
+      "meta": {},
+      "source": "live/s3.tf"
+    },
+    {
+      "id": "bucket:deadman-example-com",
+      "kind": "bucket",
+      "label": "deadman-example-com",
+      "layer": "cloud",
+      "meta": {},
+      "source": "live/s3.tf"
+    },
+    {
+      "id": "bucket:frigate-snapshots-example-com",
+      "kind": "bucket",
+      "label": "frigate-snapshots-example-com",
+      "layer": "cloud",
+      "meta": {},
+      "source": "live/s3.tf"
+    },
+    {
+      "id": "bucket:homelab-backups-example-com",
+      "kind": "bucket",
+      "label": "homelab-backups-example-com",
+      "layer": "cloud",
+      "meta": {},
+      "source": "live/s3.tf"
+    },
+    {
+      "id": "bucket:labodeludo.dev",
+      "kind": "bucket",
+      "label": "labodeludo.dev",
+      "layer": "cloud",
+      "meta": {},
+      "source": "live/s3.tf"
+    },
+    {
+      "id": "bucket:loki-logs-example-com",
+      "kind": "bucket",
+      "label": "loki-logs-example-com",
+      "layer": "cloud",
+      "meta": {},
+      "source": "live/s3.tf"
+    },
+    {
+      "id": "bucket:shrt.example",
+      "kind": "bucket",
+      "label": "shrt.example",
+      "layer": "cloud",
+      "meta": {},
+      "source": "live/s3.tf"
+    },
+    {
+      "id": "bucket:mkv.plex.lab.example",
+      "kind": "bucket",
+      "label": "mkv.plex.lab.example",
+      "layer": "cloud",
+      "meta": {},
+      "source": "live/s3.tf"
+    },
+    {
+      "id": "bucket:numeriseur-scans-example-com",
+      "kind": "bucket",
+      "label": "numeriseur-scans-example-com",
+      "layer": "cloud",
+      "meta": {},
+      "source": "live/s3.tf"
+    }
+  ],
+  "repo": "aws-iac-public",
+  "topologyVersion": 1
+}
